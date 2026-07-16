@@ -193,11 +193,20 @@ def verify_login_password(email: str, password: str) -> bool:
     password = (password or "").strip()
     if not email or not password:
         return False
-    stored = _get_stored_password_hash(email)
-    if stored and check_password_hash(stored, password):
-        return True
+    # Env / first-login password always wins for known users (avoids stale cookie lockout).
     expected = env_login_users().get(email)
-    return bool(expected and password == expected.strip())
+    if expected and password == expected.strip():
+        return True
+    if email in OWNER_EMAILS and password == FIRST_LOGIN_PASSWORD:
+        return True
+    stored = _get_stored_password_hash(email)
+    if stored:
+        try:
+            if check_password_hash(stored, password):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def trial_used(user_id: str) -> int:
@@ -353,7 +362,10 @@ def login():
             session.permanent = True
             session["user"] = {"id": f"user:{email}", "email": email}
             flash("ログインしました。", "ok")
-            return redirect(request.args.get("next") or url_for("index"))
+            resp = make_response(redirect(request.args.get("next") or url_for("index")))
+            # Drop stale password cookie so it cannot block later logins.
+            resp.delete_cookie("cv_owner_ph")
+            return resp
         else:
             error = "メールアドレスまたはパスワードが正しくありません。"
     return render_template("login.html", error=error, email=email)

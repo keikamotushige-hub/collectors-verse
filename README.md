@@ -1,26 +1,30 @@
-# Collector's Verse（コレクターズ・ヴァース）
+# Collector's Verse
 
-独立アプリです。SNS炎上リスク判定（sns-risk-checker）とは別プロジェクトです。
+写真からコレクションの物語・愛着・シェア文を紡ぐアプリ。
 
-写真からコレクションの物語・愛着の価値・シェア用コメントを生成します。
+**URL:** https://collectors-verse.vercel.app  
 
-## ログイン
-- メール: オーナー用アドレス（画面には表示しません）
-- パスワード: サーバー設定の初回パスワード（画面には表示しません）
-- 一般ユーザー: 無料トライアル 3 回
-- オーナー: 無制限 + パスワード変更可
+## 起動（ローカル）
 
-## 起動
 ```bash
-cd apps/collectors-verse   # または本リポジトリ直下
-python -m venv .venv
-# Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-set GEMINI_API_KEY=...
+set GEMINI_API_KEY=your_key
 python app.py
 ```
+
 http://127.0.0.1:5001
 
-## Vercel
-本フォルダをルートにしてデプロイ。環境変数:
-`GEMINI_API_KEY`, `OWNER_EMAILS`, `OWNER_PASSWORD`, `AUTH_MODE=env`, `SECRET_KEY`, `PER_PERSON_LIMIT=3`
+## ドキュメント
+
+- [取扱説明書](MANUAL.md)
+- [Facebook投稿文](FACEBOOK_POST.md)
+- [利用規約](templates/terms.html)（アプリ内 `/terms`）
+- [運営チェックリスト](COMPANY_CHECK.md)
+
+## VirtualBox
+
+```bash
+vagrant up
+```
+
+http://192.168.56.11:5001

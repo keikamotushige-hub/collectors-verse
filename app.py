@@ -503,8 +503,16 @@ def index():
                         msg = str(exc).lower()
                         if any(t in msg for t in ("429", "quota", "resource_exhausted")):
                             error = "AIの利用上限に達しました。しばらくしてから再度お試しください。"
+                        elif "api key" in msg or "api_key" in msg or "401" in msg or "403" in msg:
+                            error = (
+                                "Gemini APIキーが無効か、権限がありません。"
+                                "Vercel の GEMINI_API_KEY を確認してください。"
+                            )
                         else:
-                            error = f"物語の生成に失敗しました。（{type(exc).__name__}）"
+                            detail = str(exc).strip()
+                            if len(detail) > 220:
+                                detail = detail[:220] + "…"
+                            error = f"物語の生成に失敗しました。（{type(exc).__name__}: {detail}）"
         quota = remaining_for(user)
     return render_template(
         "index.html",

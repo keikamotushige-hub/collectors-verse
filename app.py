@@ -159,31 +159,62 @@ def env_login_users() -> dict[str, str]:
     return users
 
 
-def _get_stored_password_hash(email: str) -> str | None:
+def _get_user_row(email: str) -> dict | None:
     email = email.strip().lower()
     try:
         with get_local_db() as conn:
             row = conn.execute(
+                "SELECT id, email, password_hash FROM users WHERE email = ?",
+                (email,),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def _get_stored_password_hash(email: str) -> str | None:
+    email = email.strip().lower()
+    row = _get_user_row(email)
+    if row and row.get("password_hash"):
+        return row["password_hash"]
+    try:
+        with get_local_db() as conn:
+            crow = conn.execute(
                 "SELECT password_hash FROM owner_credentials WHERE email = ?",
                 (email,),
             ).fetchone()
-            if row:
-                return row["password_hash"]
+            if crow:
+                return crow["password_hash"]
     except Exception:
         pass
-    raw = (request.cookies.get("cv_owner_ph") or "").strip()
-    if raw and ":" in raw:
-        cookie_email, cookie_hash = raw.split(":", 1)
-        if cookie_email.strip().lower() == email and cookie_hash:
-            return cookie_hash
+    for cookie_name in ("cv_user_ph", "cv_owner_ph"):
+        raw = (request.cookies.get(cookie_name) or "").strip()
+        if raw and ":" in raw:
+            cookie_email, cookie_hash = raw.split(":", 1)
+            if cookie_email.strip().lower() == email and cookie_hash:
+                return cookie_hash
     return None
 
 
-def _set_stored_password_hash(email: str, password: str) -> str:
+def _set_stored_password_hash(email: str, password: str, user_id: str | None = None) -> str:
     email = email.strip().lower()
     password_hash = generate_password_hash(password)
+    uid = user_id or f"user:{email}"
     try:
         with get_local_db() as conn:
+            existing = conn.execute(
+                "SELECT id FROM users WHERE email = ?", (email,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE users SET password_hash = ? WHERE email = ?",
+                    (password_hash, email),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
+                    (uid, email, password_hash),
+                )
             conn.execute(
                 """INSERT INTO owner_credentials (email, password_hash, updated_at)
                    VALUES (?, ?, datetime('now'))
@@ -198,12 +229,36 @@ def _set_stored_password_hash(email: str, password: str) -> str:
     return password_hash
 
 
+def create_account(email: str, password: str) -> tuple[dict | None, str | None]:
+    email = email.strip().lower()
+    password = (password or "").strip()
+    if not email or "@" not in email:
+        return None, "メールアドレスの形式が正しくありません。"
+    if len(password) < 6:
+        return None, "パスワードは6文字以上にしてください。"
+    if _get_user_row(email):
+        return None, "このメールアドレスは既に登録されています。ログインしてください。"
+    # Env owner can also create a stored account for browser persistence.
+    user_id = str(uuid.uuid4())
+    try:
+        ph = generate_password_hash(password)
+        with get_local_db() as conn:
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
+                (user_id, email, ph),
+            )
+            conn.commit()
+        return {"id": user_id, "email": email, "password_hash": ph}, None
+    except Exception as exc:
+        return None, f"アカウント作成に失敗しました。（{type(exc).__name__}）"
+
+
 def verify_login_password(email: str, password: str) -> bool:
     email = email.strip().lower()
     password = (password or "").strip()
     if not email or not password:
         return False
-    # Env / first-login password always wins for known users (avoids stale cookie lockout).
+    # Env / first-login password for owner accounts.
     expected = env_login_users().get(email)
     if expected and password == expected.strip():
         return True
@@ -217,6 +272,26 @@ def verify_login_password(email: str, password: str) -> bool:
         except Exception:
             pass
     return False
+
+
+def _auth_cookie(resp, email: str, password_hash: str):
+    resp.set_cookie(
+        "cv_user_ph",
+        f"{email}:{password_hash}",
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        samesite="Lax",
+        secure=ON_VERCEL,
+    )
+    return resp
+
+
+def session_user_for_email(email: str) -> dict:
+    email = email.strip().lower()
+    row = _get_user_row(email)
+    if row:
+        return {"id": row["id"], "email": email}
+    return {"id": f"user:{email}", "email": email}
 
 
 def trial_used(user_id: str) -> int:
@@ -410,15 +485,46 @@ def login():
         elif verify_login_password(email, password):
             session.clear()
             session.permanent = True
-            session["user"] = {"id": f"user:{email}", "email": email}
+            session["user"] = session_user_for_email(email)
             flash("ログインしました。", "ok")
             resp = make_response(redirect(request.args.get("next") or url_for("index")))
-            # Drop stale password cookie so it cannot block later logins.
-            resp.delete_cookie("cv_owner_ph")
+            stored = _get_stored_password_hash(email)
+            if stored:
+                _auth_cookie(resp, email, stored)
             return resp
         else:
-            error = "メールアドレスまたはパスワードが正しくありません。"
+            error = "メールアドレスまたはパスワードが正しくありません。アカウント未作成の場合は新規登録してください。"
     return render_template("login.html", error=error, email=email)
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    error = None
+    email = ""
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        password = (request.form.get("password") or "").strip()
+        password2 = (request.form.get("password2") or "").strip()
+        agreed = request.form.get("agree_terms") == "on"
+        if not agreed:
+            error = "利用規約・免責事項への同意が必要です。"
+        elif not email or not password:
+            error = "メールアドレスとパスワードを入力してください。"
+        elif password != password2:
+            error = "確認用パスワードが一致しません。"
+        else:
+            user, err = create_account(email, password)
+            if err:
+                error = err
+            else:
+                session.clear()
+                session.permanent = True
+                session["user"] = {"id": user["id"], "email": email}
+                flash("アカウントを作成してログインしました。", "ok")
+                resp = make_response(redirect(url_for("index")))
+                _auth_cookie(resp, email, user["password_hash"])
+                return resp
+    return render_template("signup.html", error=error, email=email)
 
 
 @app.route("/logout")
@@ -432,9 +538,6 @@ def logout():
 @login_required
 def change_password():
     user = current_user()
-    if not is_owner(user):
-        flash("オーナーのみ変更できます。", "error")
-        return redirect(url_for("index"))
     error = None
     if request.method == "POST":
         cur = (request.form.get("current_password") or "").strip()
@@ -447,17 +550,10 @@ def change_password():
         elif new != new2:
             error = "確認用パスワードが一致しません。"
         else:
-            ph = _set_stored_password_hash(user["email"], new)
+            ph = _set_stored_password_hash(user["email"], new, user_id=user.get("id"))
             flash("パスワードを変更しました。", "ok")
             resp = make_response(redirect(url_for("index")))
-            resp.set_cookie(
-                "cv_owner_ph",
-                f"{user['email']}:{ph}",
-                max_age=60 * 60 * 24 * 365,
-                httponly=True,
-                samesite="Lax",
-                secure=ON_VERCEL,
-            )
+            _auth_cookie(resp, user["email"], ph)
             return resp
     return render_template("change_password.html", error=error)
 

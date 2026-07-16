@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>新規登録 | {{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="narrow">
+    <p class="brand-en">{{ app_name }}</p>
+    <h1>新規登録</h1>
+    <p class="lead">アカウントを作成して、コレクションの物語を残せます。</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="message {{ 'error' if category == 'error' else 'ok' }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% if error %}<div class="message error">{{ error }}</div>{% endif %}
+    <form method="post" action="{{ url_for('signup') }}">
+      <div class="field">
+        <label for="email">メールアドレス</label>
+        <input id="email" name="email" type="email" required value="{{ email }}" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="password">パスワード（6文字以上）</label>
+        <input id="password" name="password" type="password" required minlength="6" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label for="password2">パスワード（確認）</label>
+        <input id="password2" name="password2" type="password" required minlength="6" autocomplete="new-password">
+      </div>
+      <label class="agree" for="agree_terms">
+        <input type="checkbox" name="agree_terms" id="agree_terms" required>
+        <span><a href="{{ url_for('terms') }}" target="_blank" rel="noopener">利用規約・免責事項</a>に同意します</span>
+      </label>
+      <button type="submit">アカウントを作成</button>
+    </form>
+    <p class="hint-center">すでにアカウントがある方は <a href="{{ url_for('login') }}">ログイン</a></p>
+  </main>
+</body>
+</html>

@@ -14,7 +14,8 @@
         <h1>{{ app_name_ja }}</h1>
       </div>
       <div class="user">
-        {% if is_owner %}<strong>オーナー</strong> / <a href="{{ url_for('change_password') }}">パスワード変更</a> /{% endif %}
+        {% if is_owner %}<strong>オーナー</strong> / {% endif %}
+        <a href="{{ url_for('change_password') }}">パスワード変更</a> /
         <a href="{{ url_for('terms') }}">利用規約</a> /
         <a href="{{ url_for('logout') }}">ログアウト</a>
       </div>

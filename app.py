@@ -62,21 +62,27 @@ OWNER_EMAILS = {
 OWNER_EMAILS.add(SHARED_OWNER_EMAIL.lower())
 OWNER_PASSWORD = (os.environ.get("OWNER_PASSWORD") or FIRST_LOGIN_PASSWORD).strip()
 
-STORY_PROMPT = """あなたはコレクター向けの鑑定ストーリーライターです。
+STORY_PROMPT = """あなたはコレクター向けの物語ライターです。
 写真とユーザーのメモからアイテムを推定し、日本語で美しく、肯定的に描写してください。
-法的鑑定や価格保証はしません。必ず次の形式だけ出力してください。
+これは正式な鑑定・真贋判定・価格保証・投資助言ではありません。断定しすぎず、推定であることを示してください。
+法令違反・盗品・権利侵害を助長する内容は書かないでください。
+必ず次の形式だけ出力してください。
 
 # タイトル
-（アイテム名の推定）
+（アイテム名の推定。不確実なら「推定:」を付ける）
 
 ## 物語
-（歴史・職人・時代背景を2〜4段落）
+（歴史・職人・時代背景を2〜4段落。不確かな点は推測と明記）
 
 ## 愛着の価値
-（なぜ大切に残したくなるか）
+（なぜ大切に残したくなるか。相場断定はしない）
 
 ## シェア用コメント
 （SNSに貼れる短い肯定文・1〜3文）
+
+## 注意
+- 本結果は参考の物語であり、正式鑑定・価値保証ではありません
+- 最終判断は利用者本人が行ってください
 """
 
 
@@ -394,14 +400,23 @@ def change_password():
     return render_template("change_password.html", error=error)
 
 
+@app.route("/terms")
+def terms():
+    return render_template("terms.html")
+
+
 @app.route("/", methods=["GET", "POST"])
 @login_required
 def index():
     user = current_user()
     quota = remaining_for(user)
     error = None
+    agreed = False
     if request.method == "POST":
-        if quota["locked"] and not is_owner(user):
+        agreed = request.form.get("agree_terms") == "on"
+        if not agreed:
+            error = "利用規約・免責事項への同意が必要です。"
+        elif quota["locked"] and not is_owner(user):
             error = f"無料トライアルは {PER_PERSON_LIMIT} 回までです。"
         else:
             image = request.files.get("photo")
@@ -413,6 +428,8 @@ def index():
                 mime = image.mimetype or "image/jpeg"
                 if not raw or not mime.startswith("image/"):
                     error = "画像ファイルを選んでください。"
+                elif len(raw) > 8 * 1024 * 1024:
+                    error = "画像は 8MB 以下にしてください。"
                 else:
                     try:
                         parsed = parse_story(generate_story(raw, mime, note))
@@ -421,7 +438,11 @@ def index():
                             trial_increment(user["id"])
                         return redirect(url_for("item_detail", item_id=item_id))
                     except Exception as exc:
-                        error = f"物語の生成に失敗しました。（{exc}）"
+                        msg = str(exc).lower()
+                        if any(t in msg for t in ("429", "quota", "resource_exhausted")):
+                            error = "AIの利用上限に達しました。しばらくしてから再度お試しください。"
+                        else:
+                            error = f"物語の生成に失敗しました。（{type(exc).__name__}）"
         quota = remaining_for(user)
     return render_template(
         "index.html",
@@ -430,6 +451,7 @@ def index():
         quota=quota,
         error=error,
         items=list_items(user["id"]),
+        agreed=agreed,
     )
 
 

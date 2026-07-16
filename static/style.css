@@ -44,4 +44,28 @@ button:hover, .btn:hover { background: var(--accent-hover); }
 .item-list { list-style: none; padding: 0; margin: 1.5rem 0 0; display: grid; gap: .7rem; font-family: "Segoe UI", sans-serif; }
 .item-list a { display: block; padding: .9rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); text-decoration: none; }
 .hint-center { text-align: center; margin-top: 1rem; color: var(--muted); font-family: "Segoe UI", sans-serif; }
-footer { margin-top: 1.5rem; color: var(--muted); font-size: .85rem; font-family: "Segoe UI", sans-serif; }
+.disclaimer {
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 10px;
+  background: #eef3f7;
+  color: #334155;
+  border: 1px solid var(--line);
+  font-family: "Segoe UI", "Hiragino Sans", sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+.disclaimer a { color: var(--accent); font-weight: 600; }
+.agree {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  line-height: 1.55;
+  font-family: "Segoe UI", "Hiragino Sans", sans-serif;
+  font-size: 0.9rem;
+}
+.agree input { margin-top: 0.25rem; }

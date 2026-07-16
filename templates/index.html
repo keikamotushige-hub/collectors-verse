@@ -15,20 +15,34 @@
       </div>
       <div class="user">
         {% if is_owner %}<strong>オーナー</strong> / <a href="{{ url_for('change_password') }}">パスワード変更</a> /{% endif %}
+        <a href="{{ url_for('terms') }}">利用規約</a> /
         <a href="{{ url_for('logout') }}">ログアウト</a>
       </div>
     </div>
     <p class="lead">{{ app_tagline }} 写真から、歴史と愛着の物語を紡ぎます。</p>
+
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% for category, message in messages %}
         <div class="message {{ 'error' if category == 'error' else 'ok' }}">{{ message }}</div>
       {% endfor %}
     {% endwith %}
+
     <div class="notice">
       {% if is_owner %}オーナー権限: 回数制限なし{% else %}無料トライアル {{ quota.limit }} 回まで。残り <strong>{{ quota.remaining }}</strong> 回{% if quota.locked %}／ロック中{% endif %}{% endif %}
     </div>
+
+    <div class="disclaimer">
+      <strong>免責（必ずお読みください）</strong><br>
+      ・本サービスは AI による参考の物語生成です。正式鑑定・真贋判定・価格保証・投資／法律助言ではありません。<br>
+      ・結果の正確性は保証しません。売買・公開などの最終判断は利用者本人の責任です。<br>
+      ・権利侵害・違法取引・盗品等に関わる利用は禁止です。<br>
+      ・詳細は <a href="{{ url_for('terms') }}">利用規約・免責事項</a> を確認してください。<br>
+      ・運営: 鈴木トータルサービス（本アプリは炎上リスク判定とは別サービスです）
+    </div>
+
     {% if error %}<div class="message error">{{ error }}</div>{% endif %}
-    <form method="post" enctype="multipart/form-data">
+
+    <form method="post" enctype="multipart/form-data" id="story-form">
       <div class="field">
         <label for="photo">コレクション写真</label>
         <input id="photo" name="photo" type="file" accept="image/*" required>
@@ -37,8 +51,13 @@
         <label for="journal_note">入手の思い出・メモ（任意）</label>
         <textarea id="journal_note" name="journal_note" placeholder="例: 蚤の市で見つけた"></textarea>
       </div>
+      <label class="agree">
+        <input type="checkbox" name="agree_terms" id="agree_terms" {% if agreed %}checked{% endif %}>
+        <span><a href="{{ url_for('terms') }}" target="_blank" rel="noopener">利用規約・免責事項</a>に同意し、本結果が参考情報であることを理解しました。</span>
+      </label>
       <button type="submit" id="run-story">物語を紡ぐ</button>
     </form>
+
     {% if items %}
       <ul class="item-list">
         {% for it in items %}
@@ -46,7 +65,21 @@
         {% endfor %}
       </ul>
     {% endif %}
-    <footer>鈴木トータルサービス · {{ app_name }}（SNS炎上リスク判定とは別アプリ）</footer>
+
+    <footer>鈴木トータルサービス · {{ app_name }} · <a href="{{ url_for('terms') }}">利用規約</a></footer>
   </main>
+  <script>
+    document.getElementById("story-form")?.addEventListener("submit", function (e) {
+      var agree = document.getElementById("agree_terms");
+      var btn = document.getElementById("run-story");
+      if (agree && !agree.checked) {
+        e.preventDefault();
+        alert("利用規約への同意が必要です。");
+        agree.focus();
+        return;
+      }
+      if (btn) btn.textContent = "紡いでいます…";
+    });
+  </script>
 </body>
 </html>

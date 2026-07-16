@@ -53,7 +53,17 @@ app.config.update(
 )
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_CANDIDATES = (
+    GEMINI_MODEL,
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
+)
 PER_PERSON_LIMIT = int(os.environ.get("PER_PERSON_LIMIT", "3"))
+QUOTA_STOP_MESSAGE = (
+    "Gemini API の利用上限に達しました。しばらく待ってから再試行するか、"
+    "Google AI Studio のクォータを確認してください。"
+)
 OWNER_EMAILS = {
     e.strip().lower()
     for e in (os.environ.get("OWNER_EMAILS") or SHARED_OWNER_EMAIL).split(",")
@@ -252,21 +262,52 @@ def remaining_for(user: dict) -> dict:
 def generate_story(image_bytes: bytes, mime: str, note: str) -> str:
     api_key = get_api_key()
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY が設定されていません。")
+        raise RuntimeError(
+            "サーバーに APIキー（GEMINI_API_KEY）が入っていません。"
+            "Vercel の Environment Variables に設定してください。"
+        )
     client = genai.Client(api_key=api_key)
     parts = [
         types.Part(text=STORY_PROMPT),
         types.Part(text=f"【ユーザーメモ】\n{note or '（なし）'}"),
         types.Part(inline_data=types.Blob(data=image_bytes, mime_type=mime)),
     ]
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=types.Content(role="user", parts=parts),
-    )
-    text = (getattr(response, "text", None) or "").strip()
-    if not text:
-        raise RuntimeError("物語を生成できませんでした。")
-    return text
+    contents = types.Content(role="user", parts=parts)
+    last_error: Exception | None = None
+    models_to_try: list[str] = []
+    for name in MODEL_CANDIDATES:
+        if name and name not in models_to_try:
+            models_to_try.append(name)
+
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+            )
+            text = (getattr(response, "text", None) or "").strip()
+            if text:
+                return text
+            last_error = RuntimeError("物語を生成できませんでした。")
+        except Exception as exc:
+            message = str(exc).lower()
+            if any(
+                token in message
+                for token in ("429", "resource_exhausted", "quota", "rate limit")
+            ):
+                raise RuntimeError(QUOTA_STOP_MESSAGE) from exc
+            last_error = RuntimeError(
+                f"Geminiへの接続に失敗しました（モデル: {model_name}）。"
+                f"詳細: {type(exc).__name__}: {exc}"
+            )
+            if any(
+                token in message
+                for token in ("404", "not_found", "no longer available")
+            ):
+                continue
+            raise last_error from exc
+
+    raise last_error or RuntimeError("物語を生成できませんでした。")
 
 
 def parse_story(text: str) -> dict:
@@ -345,7 +386,16 @@ def inject_brand():
 @app.route("/health")
 def health():
     user = current_user()
-    return {"ok": True, "app": APP_NAME, "logged_in": bool(user), "is_owner": is_owner(user)}
+    api_key = get_api_key()
+    return {
+        "ok": True,
+        "app": APP_NAME,
+        "logged_in": bool(user),
+        "is_owner": is_owner(user),
+        "has_gemini_key": bool(api_key),
+        "gemini_key_length": len(api_key),
+        "model": GEMINI_MODEL,
+    }
 
 
 @app.route("/login", methods=["GET", "POST"])

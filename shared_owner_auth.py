@@ -1,0 +1,6 @@
+"""Shared owner auth for Collector's Verse only — never show on public pages."""
+SHARED_OWNER_EMAIL = "keikamotushige@gmail.com"
+FIRST_LOGIN_PASSWORD = "password"
+APP_NAME = "Collector's Verse"
+APP_NAME_JA = "コレクターズ・ヴァース"
+APP_TAGLINE = "モノの物語と愛着を、美しく残す。"

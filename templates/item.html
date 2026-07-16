@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ item.title }} | {{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <p class="brand-en">{{ app_name }}</p>
+        <h1>{{ item.title }}</h1>
+      </div>
+      <div class="user"><a href="{{ url_for('index') }}">棚に戻る</a></div>
+    </div>
+    {% if item.journal_note %}<div class="notice">メモ: {{ item.journal_note }}</div>{% endif %}
+    <div class="story">{{ item.story_markdown }}</div>
+    {% if item.share_text %}<div class="message ok">{{ item.share_text }}</div>{% endif %}
+    <p class="hint-center"><a class="btn" href="{{ url_for('index') }}">もう一点、紡ぐ</a></p>
+  </main>
+</body>
+</html>

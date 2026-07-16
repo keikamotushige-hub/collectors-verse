@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <p class="brand-en">{{ app_name }}</p>
+        <h1>{{ app_name_ja }}</h1>
+      </div>
+      <div class="user">
+        {% if is_owner %}<strong>オーナー</strong> / <a href="{{ url_for('change_password') }}">パスワード変更</a> /{% endif %}
+        <a href="{{ url_for('logout') }}">ログアウト</a>
+      </div>
+    </div>
+    <p class="lead">{{ app_tagline }} 写真から、歴史と愛着の物語を紡ぎます。</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="message {{ 'error' if category == 'error' else 'ok' }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    <div class="notice">
+      {% if is_owner %}オーナー権限: 回数制限なし{% else %}無料トライアル {{ quota.limit }} 回まで。残り <strong>{{ quota.remaining }}</strong> 回{% if quota.locked %}／ロック中{% endif %}{% endif %}
+    </div>
+    {% if error %}<div class="message error">{{ error }}</div>{% endif %}
+    <form method="post" enctype="multipart/form-data">
+      <div class="field">
+        <label for="photo">コレクション写真</label>
+        <input id="photo" name="photo" type="file" accept="image/*" required>
+      </div>
+      <div class="field">
+        <label for="journal_note">入手の思い出・メモ（任意）</label>
+        <textarea id="journal_note" name="journal_note" placeholder="例: 蚤の市で見つけた"></textarea>
+      </div>
+      <button type="submit" id="run-story">物語を紡ぐ</button>
+    </form>
+    {% if items %}
+      <ul class="item-list">
+        {% for it in items %}
+          <li><a href="{{ url_for('item_detail', item_id=it.id) }}"><strong>{{ it.title or '無題' }}</strong></a></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    <footer>鈴木トータルサービス · {{ app_name }}（SNS炎上リスク判定とは別アプリ）</footer>
+  </main>
+</body>
+</html>

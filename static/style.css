@@ -1,0 +1,47 @@
+:root {
+  --bg: #f7f4ef;
+  --ink: #1c1917;
+  --muted: #78716c;
+  --accent: #0f766e;
+  --accent-hover: #0d9488;
+  --panel: #fffcf8;
+  --line: #e7e5e4;
+  --ok-bg: #ecfdf5;
+  --ok-ink: #065f46;
+  --danger-bg: #fef2f2;
+  --danger-ink: #991b1b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Yu Mincho", serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(15,118,110,.12), transparent 42%),
+    radial-gradient(circle at 90% 100%, rgba(28,25,23,.06), transparent 40%),
+    var(--bg);
+}
+main { width: min(720px, calc(100% - 2rem)); margin: 0 auto; padding: 2.25rem 0 3rem; }
+main.narrow { width: min(420px, calc(100% - 2rem)); }
+h1 { margin: 0 0 .35rem; font-size: clamp(1.6rem, 4vw, 2rem); }
+.brand-en { margin: 0; color: var(--accent); font-size: .85rem; letter-spacing: .14em; text-transform: uppercase; font-family: "Segoe UI", sans-serif; }
+.lead { margin: 0 0 1.1rem; color: var(--muted); line-height: 1.7; font-family: "Segoe UI", "Hiragino Sans", sans-serif; }
+.topbar { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.topbar .user { color: var(--muted); font-size: .92rem; font-family: "Segoe UI", sans-serif; }
+.topbar a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.notice { margin: 0 0 1rem; padding: .85rem 1rem; border-radius: 10px; background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; font-family: "Segoe UI", sans-serif; font-size: .92rem; line-height: 1.6; }
+form { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem; display: grid; gap: 1rem; }
+.field label { display: block; margin-bottom: .4rem; font-weight: 600; font-family: "Segoe UI", sans-serif; font-size: .92rem; }
+input, textarea { width: 100%; padding: .85rem 1rem; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; font-family: "Segoe UI", sans-serif; }
+textarea { min-height: 96px; resize: vertical; }
+button, .btn { border: 0; border-radius: 999px; padding: .95rem 1.2rem; background: var(--accent); color: #fff; font-family: "Segoe UI", sans-serif; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; touch-action: manipulation; }
+button { width: 100%; min-height: 3rem; }
+button:hover, .btn:hover { background: var(--accent-hover); }
+.message { margin: 0 0 1rem; padding: 1rem; border-radius: 10px; line-height: 1.7; white-space: pre-wrap; font-family: "Segoe UI", sans-serif; }
+.error { background: var(--danger-bg); color: var(--danger-ink); }
+.ok { background: var(--ok-bg); color: var(--ok-ink); }
+.story { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.4rem 1.3rem; line-height: 1.85; white-space: pre-wrap; }
+.item-list { list-style: none; padding: 0; margin: 1.5rem 0 0; display: grid; gap: .7rem; font-family: "Segoe UI", sans-serif; }
+.item-list a { display: block; padding: .9rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); text-decoration: none; }
+.hint-center { text-align: center; margin-top: 1rem; color: var(--muted); font-family: "Segoe UI", sans-serif; }
+footer { margin-top: 1.5rem; color: var(--muted); font-size: .85rem; font-family: "Segoe UI", sans-serif; }

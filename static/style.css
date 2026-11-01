@@ -69,3 +69,22 @@ button:hover, .btn:hover { background: var(--accent-hover); }
   font-size: 0.9rem;
 }
 .agree input { margin-top: 0.25rem; }
+form.inline-form {
+  display: inline;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+}
+.link-button {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: inherit;
+  border-radius: 0;
+}
+.link-button:hover { background: none; text-decoration: underline; }

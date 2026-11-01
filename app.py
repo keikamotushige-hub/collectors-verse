@@ -1,10 +1,12 @@
 """Collector's Verse — standalone collector app (not SNS Risk Checker)."""
 import hashlib
 import os
+import secrets
 import sqlite3
 import uuid
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import (
     Flask,
@@ -16,13 +18,14 @@ from flask import (
     session,
     url_for,
 )
+from flask_wtf.csrf import CSRFError, CSRFProtect
 from google import genai
 from google.genai import types
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from shared_owner_auth import (
     APP_NAME,
     APP_NAME_JA,
     APP_TAGLINE,
-    FIRST_LOGIN_PASSWORD,
     SHARED_OWNER_EMAIL,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -40,17 +43,50 @@ LOCAL_SCHEMA_PATH = BASE_DIR / "db" / "local_schema.sql"
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
-_secret = (os.environ.get("SECRET_KEY") or "").strip()
-if not _secret:
-    _seed = (os.environ.get("GEMINI_API_KEY") or FIRST_LOGIN_PASSWORD).strip()
-    _secret = hashlib.sha256(f"collectors-verse:{_seed}".encode()).hexdigest()
-app.secret_key = _secret
+
+
+def load_secret_key() -> str:
+    """Signing key for sessions and password cookies.
+
+    Never derived from a password committed in source. On Vercel, SECRET_KEY
+    should be set; GEMINI_API_KEY is only a stable fallback so serverless
+    instances agree. Local runs persist a random key under DATA_DIR.
+    """
+    configured = (os.environ.get("SECRET_KEY") or "").strip()
+    if len(configured) >= 32:
+        return configured
+    if not ON_VERCEL:
+        secret_path = DATA_DIR / ".flask_secret"
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if secret_path.is_file():
+            existing = secret_path.read_text(encoding="utf-8").strip()
+            if len(existing) >= 32:
+                return existing
+        generated = secrets.token_hex(32)
+        secret_path.write_text(generated + "\n", encoding="utf-8")
+        try:
+            os.chmod(secret_path, 0o600)
+        except OSError:
+            pass
+        return generated
+    api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if len(api_key) >= 16:
+        return hashlib.sha256(f"collectors-verse-session:{api_key}".encode()).hexdigest()
+    raise RuntimeError(
+        "SECRET_KEY must be set. Refusing a signing key derived from a fixed password."
+    )
+
+
+app.secret_key = load_secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=ON_VERCEL,
     PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 14,
+    WTF_CSRF_TIME_LIMIT=60 * 60 * 12,
+    WTF_CSRF_SSL_STRICT=ON_VERCEL,
 )
+csrf = CSRFProtect(app)
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 MODEL_CANDIDATES = (
@@ -70,7 +106,13 @@ OWNER_EMAILS = {
     if e.strip()
 }
 OWNER_EMAILS.add(SHARED_OWNER_EMAIL.lower())
-OWNER_PASSWORD = (os.environ.get("OWNER_PASSWORD") or FIRST_LOGIN_PASSWORD).strip()
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_LIMIT_MESSAGE = "ログイン試行が多すぎます。しばらく待ってから再度お試しください。"
+PASSWORD_COOKIE = "cv_user_ph"
+LEGACY_PASSWORD_COOKIE = "cv_owner_ph"
+PASSWORD_COOKIE_SALT = "collectors-verse-password-hash"
+PASSWORD_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 STORY_PROMPT = """あなたはコレクター向けの物語ライターです。
 写真とユーザーのメモからアイテムを推定し、日本語で美しく、肯定的に描写してください。
@@ -144,6 +186,7 @@ def login_required(view):
 
 
 def env_login_users() -> dict[str, str]:
+    """Bootstrap passwords from the environment. Never a password baked into source."""
     users: dict[str, str] = {}
     raw = (os.environ.get("LOGIN_USERS") or "").strip()
     if raw:
@@ -154,9 +197,19 @@ def env_login_users() -> dict[str, str]:
             email, password = email.strip().lower(), password.strip()
             if email and password:
                 users[email] = password
-    for email in OWNER_EMAILS:
-        users[email] = OWNER_PASSWORD
+    owner_password = (os.environ.get("OWNER_PASSWORD") or "").strip()
+    if owner_password:
+        for email in OWNER_EMAILS:
+            users.setdefault(email, owner_password)
     return users
+
+
+def _consteq(left: str, right: str) -> bool:
+    left_b = left.encode("utf-8")
+    right_b = right.encode("utf-8")
+    if len(left_b) != len(right_b):
+        return False
+    return secrets.compare_digest(left_b, right_b)
 
 
 def _get_user_row(email: str) -> dict | None:
@@ -172,6 +225,32 @@ def _get_user_row(email: str) -> dict | None:
         return None
 
 
+def _password_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(app.secret_key, salt=PASSWORD_COOKIE_SALT)
+
+
+def _signed_password_hash(email: str) -> str | None:
+    """Password hash from a server-signed cookie. Unsigned values are ignored."""
+    raw = (request.cookies.get(PASSWORD_COOKIE) or "").strip()
+    if not raw:
+        return None
+    try:
+        data = _password_serializer().loads(raw, max_age=PASSWORD_COOKIE_MAX_AGE)
+    except BadSignature:
+        return None
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    cookie_email = data.get("email")
+    cookie_hash = data.get("ph")
+    if not isinstance(cookie_email, str) or not isinstance(cookie_hash, str):
+        return None
+    if cookie_email.strip().lower() != email or not cookie_hash:
+        return None
+    return cookie_hash
+
+
 def _get_stored_password_hash(email: str) -> str | None:
     email = email.strip().lower()
     row = _get_user_row(email)
@@ -183,17 +262,11 @@ def _get_stored_password_hash(email: str) -> str | None:
                 "SELECT password_hash FROM owner_credentials WHERE email = ?",
                 (email,),
             ).fetchone()
-            if crow:
+            if crow and crow["password_hash"]:
                 return crow["password_hash"]
     except Exception:
         pass
-    for cookie_name in ("cv_user_ph", "cv_owner_ph"):
-        raw = (request.cookies.get(cookie_name) or "").strip()
-        if raw and ":" in raw:
-            cookie_email, cookie_hash = raw.split(":", 1)
-            if cookie_email.strip().lower() == email and cookie_hash:
-                return cookie_hash
-    return None
+    return _signed_password_hash(email)
 
 
 def _set_stored_password_hash(email: str, password: str, user_id: str | None = None) -> str:
@@ -234,11 +307,12 @@ def create_account(email: str, password: str) -> tuple[dict | None, str | None]:
     password = (password or "").strip()
     if not email or "@" not in email:
         return None, "メールアドレスの形式が正しくありません。"
+    if email in OWNER_EMAILS:
+        return None, "このメールアドレスでは新規登録できません。ログインしてください。"
     if len(password) < 6:
         return None, "パスワードは6文字以上にしてください。"
     if _get_user_row(email):
         return None, "このメールアドレスは既に登録されています。ログインしてください。"
-    # Env owner can also create a stored account for browser persistence.
     user_id = str(uuid.uuid4())
     try:
         ph = generate_password_hash(password)
@@ -258,32 +332,122 @@ def verify_login_password(email: str, password: str) -> bool:
     password = (password or "").strip()
     if not email or not password:
         return False
-    # Env / first-login password for owner accounts.
-    expected = env_login_users().get(email)
-    if expected and password == expected.strip():
-        return True
-    if email in OWNER_EMAILS and password == FIRST_LOGIN_PASSWORD:
-        return True
+    # A stored hash (database or signed cookie) replaces bootstrap passwords.
     stored = _get_stored_password_hash(email)
     if stored:
         try:
-            if check_password_hash(stored, password):
-                return True
+            return bool(check_password_hash(stored, password))
         except Exception:
-            pass
-    return False
+            return False
+    expected = env_login_users().get(email)
+    if not expected:
+        return False
+    return _consteq(password, expected)
 
 
-def _auth_cookie(resp, email: str, password_hash: str):
+def _set_password_cookie(resp, email: str, password_hash: str):
+    token = _password_serializer().dumps({"email": email.strip().lower(), "ph": password_hash})
     resp.set_cookie(
-        "cv_user_ph",
-        f"{email}:{password_hash}",
-        max_age=60 * 60 * 24 * 365,
+        PASSWORD_COOKIE,
+        token,
+        max_age=PASSWORD_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=ON_VERCEL,
+        path="/",
+    )
+    resp.delete_cookie(
+        LEGACY_PASSWORD_COOKIE,
+        path="/",
         httponly=True,
         samesite="Lax",
         secure=ON_VERCEL,
     )
     return resp
+
+
+def _client_ip() -> str:
+    return (request.remote_addr or "unknown").strip() or "unknown"
+
+
+def _attempt_keys(email: str) -> list[str]:
+    keys = [f"ip:{_client_ip()}"]
+    if email:
+        keys.append(f"email:{email}")
+    return keys
+
+
+def _window_modifier() -> str:
+    seconds = int(LOGIN_WINDOW_SECONDS)
+    if seconds < 1:
+        seconds = 1
+    return f"-{seconds} seconds"
+
+
+def login_is_limited(email: str) -> bool:
+    email = (email or "").strip().lower()
+    try:
+        with get_local_db() as conn:
+            modifier = _window_modifier()
+            for key in _attempt_keys(email):
+                row = conn.execute(
+                    """SELECT COUNT(*) AS c FROM login_attempts
+                       WHERE attempt_key = ? AND failed_at >= datetime('now', ?)""",
+                    (key, modifier),
+                ).fetchone()
+                if row and int(row["c"]) >= int(LOGIN_MAX_FAILURES):
+                    return True
+    except Exception:
+        return True
+    return False
+
+
+def record_login_failure(email: str) -> None:
+    email = (email or "").strip().lower()
+    with get_local_db() as conn:
+        modifier = _window_modifier()
+        conn.execute(
+            "DELETE FROM login_attempts WHERE failed_at < datetime('now', ?)",
+            (modifier,),
+        )
+        for key in _attempt_keys(email):
+            conn.execute(
+                "INSERT INTO login_attempts (attempt_key, failed_at) VALUES (?, datetime('now'))",
+                (key,),
+            )
+        conn.commit()
+
+
+def clear_login_failures(email: str) -> None:
+    email = (email or "").strip().lower()
+    with get_local_db() as conn:
+        for key in _attempt_keys(email):
+            conn.execute("DELETE FROM login_attempts WHERE attempt_key = ?", (key,))
+        conn.commit()
+
+
+def safe_next_url(target: str | None) -> str | None:
+    """Same-origin relative path, or None when the target could leave the site."""
+    if target is None:
+        return None
+    candidate = target.strip()
+    if not candidate or len(candidate) > 512:
+        return None
+    if any(ch in candidate for ch in ("\r", "\n", "\t", "\\", "\x00")):
+        return None
+    if "://" in candidate or candidate.startswith("//"):
+        return None
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        return None
+    if not candidate.startswith("/"):
+        return None
+    return candidate
+
+
+def redirect_after_login():
+    target = safe_next_url(request.form.get("next")) or safe_next_url(request.args.get("next"))
+    return redirect(target or url_for("index"))
 
 
 def session_user_for_email(email: str) -> dict:
@@ -458,43 +622,43 @@ def inject_brand():
     return {"app_name": APP_NAME, "app_name_ja": APP_NAME_JA, "app_tagline": APP_TAGLINE}
 
 
+@app.errorhandler(CSRFError)
+def handle_csrf_error(_err: CSRFError):
+    return ("不正なリクエストです。ページを再読み込みしてやり直してください。", 400)
+
+
 @app.route("/health")
 def health():
-    user = current_user()
-    api_key = get_api_key()
-    return {
-        "ok": True,
-        "app": APP_NAME,
-        "logged_in": bool(user),
-        "is_owner": is_owner(user),
-        "has_gemini_key": bool(api_key),
-        "gemini_key_length": len(api_key),
-        "model": GEMINI_MODEL,
-    }
+    return {"ok": True}
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
     email = ""
+    next_url = safe_next_url(request.values.get("next")) or ""
     if request.method == "POST":
         email = (request.form.get("email") or "").strip().lower()
         password = (request.form.get("password") or "").strip()
         if not email or not password:
             error = "メールアドレスとパスワードを入力してください。"
+        elif login_is_limited(email):
+            error = LOGIN_LIMIT_MESSAGE
         elif verify_login_password(email, password):
+            clear_login_failures(email)
             session.clear()
             session.permanent = True
             session["user"] = session_user_for_email(email)
             flash("ログインしました。", "ok")
-            resp = make_response(redirect(request.args.get("next") or url_for("index")))
+            resp = make_response(redirect_after_login())
             stored = _get_stored_password_hash(email)
             if stored:
-                _auth_cookie(resp, email, stored)
+                _set_password_cookie(resp, email, stored)
             return resp
         else:
+            record_login_failure(email)
             error = "メールアドレスまたはパスワードが正しくありません。アカウント未作成の場合は新規登録してください。"
-    return render_template("login.html", error=error, email=email)
+    return render_template("login.html", error=error, email=email, next_url=next_url)
 
 
 @app.route("/signup", methods=["GET", "POST"])
@@ -522,12 +686,12 @@ def signup():
                 session["user"] = {"id": user["id"], "email": email}
                 flash("アカウントを作成してログインしました。", "ok")
                 resp = make_response(redirect(url_for("index")))
-                _auth_cookie(resp, email, user["password_hash"])
+                _set_password_cookie(resp, email, user["password_hash"])
                 return resp
     return render_template("signup.html", error=error, email=email)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
     flash("ログアウトしました。", "ok")
@@ -543,17 +707,21 @@ def change_password():
         cur = (request.form.get("current_password") or "").strip()
         new = (request.form.get("new_password") or "").strip()
         new2 = (request.form.get("new_password2") or "").strip()
-        if not verify_login_password(user["email"], cur):
+        if login_is_limited(user["email"]):
+            error = LOGIN_LIMIT_MESSAGE
+        elif not verify_login_password(user["email"], cur):
+            record_login_failure(user["email"])
             error = "現在のパスワードが正しくありません。"
         elif len(new) < 6:
             error = "新しいパスワードは6文字以上にしてください。"
         elif new != new2:
             error = "確認用パスワードが一致しません。"
         else:
+            clear_login_failures(user["email"])
             ph = _set_stored_password_hash(user["email"], new, user_id=user.get("id"))
             flash("パスワードを変更しました。", "ok")
             resp = make_response(redirect(url_for("index")))
-            _auth_cookie(resp, user["email"], ph)
+            _set_password_cookie(resp, user["email"], ph)
             return resp
     return render_template("change_password.html", error=error)
 

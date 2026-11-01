@@ -17,7 +17,10 @@
         {% if is_owner %}<strong>オーナー</strong> / {% endif %}
         <a href="{{ url_for('change_password') }}">パスワード変更</a> /
         <a href="{{ url_for('terms') }}">利用規約</a> /
-        <a href="{{ url_for('logout') }}">ログアウト</a>
+        <form method="post" action="{{ url_for('logout') }}" class="inline-form">
+          {% include "_csrf.html" %}
+          <button type="submit" class="link-button">ログアウト</button>
+        </form>
       </div>
     </div>
     <p class="lead">{{ app_tagline }} 写真から、歴史と愛着の物語を紡ぎます。</p>
@@ -44,6 +47,7 @@
     {% if error %}<div class="message error">{{ error }}</div>{% endif %}
 
     <form method="post" enctype="multipart/form-data" id="story-form">
+      {% include "_csrf.html" %}
       <div class="field">
         <label for="photo">コレクション写真</label>
         <input id="photo" name="photo" type="file" accept="image/*" required>

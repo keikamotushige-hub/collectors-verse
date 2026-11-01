@@ -18,6 +18,7 @@
     {% endwith %}
     {% if error %}<div class="message error">{{ error }}</div>{% endif %}
     <form method="post" action="{{ url_for('signup') }}">
+      {% include "_csrf.html" %}
       <div class="field">
         <label for="email">メールアドレス</label>
         <input id="email" name="email" type="email" required value="{{ email }}" autocomplete="username">

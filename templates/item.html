@@ -18,7 +18,7 @@
     {% if item.journal_note %}<div class="notice">メモ: {{ item.journal_note }}</div>{% endif %}
     <div class="story">{{ item.story_markdown }}</div>
     {% if item.share_text %}<div class="message ok">{{ item.share_text }}</div>{% endif %}
-    <div class="disclaimer" style="margin-top:1rem">
+    <div class="disclaimer spaced">
       本ページの内容は参考の物語です。正式鑑定・価格保証ではありません。最終判断はご自身でお願いします。
       <a href="{{ url_for('terms') }}">利用規約</a>
     </div>

@@ -32,6 +32,20 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def load_local_env(path: Path | None = None) -> None:
+    """Load a local .env file. Existing environment variables stay as they are."""
+    env_path = path or (BASE_DIR / ".env")
+    if not env_path.is_file():
+        return
+    from dotenv import load_dotenv
+
+    load_dotenv(env_path, override=False)
+
+
+load_local_env()
+
 ON_VERCEL = bool(os.environ.get("VERCEL"))
 DATA_DIR = Path(
     os.environ.get("DATA_DIR")
@@ -109,6 +123,8 @@ OWNER_EMAILS.add(SHARED_OWNER_EMAIL.lower())
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_LIMIT_MESSAGE = "ログイン試行が多すぎます。しばらく待ってから再度お試しください。"
+SIGNUP_LIMIT_MESSAGE = "登録の試行が多すぎます。しばらく待ってから再度お試しください。"
+NOTE_MAX_LENGTH = 2000
 PASSWORD_COOKIE = "cv_user_ph"
 LEGACY_PASSWORD_COOKIE = "cv_owner_ph"
 PASSWORD_COOKIE_SALT = "collectors-verse-password-hash"
@@ -323,8 +339,8 @@ def create_account(email: str, password: str) -> tuple[dict | None, str | None]:
             )
             conn.commit()
         return {"id": user_id, "email": email, "password_hash": ph}, None
-    except Exception as exc:
-        return None, f"アカウント作成に失敗しました。（{type(exc).__name__}）"
+    except Exception:
+        return None, "アカウント作成に失敗しました。時間をおいて再度お試しください。"
 
 
 def verify_login_password(email: str, password: str) -> bool:
@@ -384,12 +400,13 @@ def _window_modifier() -> str:
     return f"-{seconds} seconds"
 
 
-def login_is_limited(email: str) -> bool:
-    email = (email or "").strip().lower()
+def _keys_are_limited(keys: list[str]) -> bool:
+    if not keys:
+        return False
     try:
         with get_local_db() as conn:
             modifier = _window_modifier()
-            for key in _attempt_keys(email):
+            for key in keys:
                 row = conn.execute(
                     """SELECT COUNT(*) AS c FROM login_attempts
                        WHERE attempt_key = ? AND failed_at >= datetime('now', ?)""",
@@ -402,20 +419,39 @@ def login_is_limited(email: str) -> bool:
     return False
 
 
-def record_login_failure(email: str) -> None:
-    email = (email or "").strip().lower()
+def _record_keys(keys: list[str]) -> None:
+    if not keys:
+        return
     with get_local_db() as conn:
         modifier = _window_modifier()
         conn.execute(
             "DELETE FROM login_attempts WHERE failed_at < datetime('now', ?)",
             (modifier,),
         )
-        for key in _attempt_keys(email):
+        for key in keys:
             conn.execute(
                 "INSERT INTO login_attempts (attempt_key, failed_at) VALUES (?, datetime('now'))",
                 (key,),
             )
         conn.commit()
+
+
+def login_is_limited(email: str) -> bool:
+    email = (email or "").strip().lower()
+    return _keys_are_limited(_attempt_keys(email))
+
+
+def record_login_failure(email: str) -> None:
+    email = (email or "").strip().lower()
+    _record_keys(_attempt_keys(email))
+
+
+def signup_is_limited() -> bool:
+    return _keys_are_limited([f"signup-ip:{_client_ip()}"])
+
+
+def record_signup_attempt() -> None:
+    _record_keys([f"signup-ip:{_client_ip()}"])
 
 
 def clear_login_failures(email: str) -> None:
@@ -622,6 +658,39 @@ def inject_brand():
     return {"app_name": APP_NAME, "app_name_ja": APP_NAME_JA, "app_tagline": APP_TAGLINE}
 
 
+@app.after_request
+def add_security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data:; "
+        "style-src 'self'; "
+        "script-src 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    if request.is_secure:
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return resp
+
+
+def detect_image_mime(raw: bytes) -> str | None:
+    """Trust the file bytes, not the browser-supplied Content-Type."""
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 @app.errorhandler(CSRFError)
 def handle_csrf_error(_err: CSRFError):
     return ("不正なリクエストです。ページを再読み込みしてやり直してください。", 400)
@@ -670,24 +739,28 @@ def signup():
         password = (request.form.get("password") or "").strip()
         password2 = (request.form.get("password2") or "").strip()
         agreed = request.form.get("agree_terms") == "on"
-        if not agreed:
-            error = "利用規約・免責事項への同意が必要です。"
-        elif not email or not password:
-            error = "メールアドレスとパスワードを入力してください。"
-        elif password != password2:
-            error = "確認用パスワードが一致しません。"
+        if signup_is_limited():
+            error = SIGNUP_LIMIT_MESSAGE
         else:
-            user, err = create_account(email, password)
-            if err:
-                error = err
+            record_signup_attempt()
+            if not agreed:
+                error = "利用規約・免責事項への同意が必要です。"
+            elif not email or not password:
+                error = "メールアドレスとパスワードを入力してください。"
+            elif password != password2:
+                error = "確認用パスワードが一致しません。"
             else:
-                session.clear()
-                session.permanent = True
-                session["user"] = {"id": user["id"], "email": email}
-                flash("アカウントを作成してログインしました。", "ok")
-                resp = make_response(redirect(url_for("index")))
-                _set_password_cookie(resp, email, user["password_hash"])
-                return resp
+                user, err = create_account(email, password)
+                if err:
+                    error = err
+                else:
+                    session.clear()
+                    session.permanent = True
+                    session["user"] = {"id": user["id"], "email": email}
+                    flash("アカウントを作成してログインしました。", "ok")
+                    resp = make_response(redirect(url_for("index")))
+                    _set_password_cookie(resp, email, user["password_hash"])
+                    return resp
     return render_template("signup.html", error=error, email=email)
 
 
@@ -747,12 +820,14 @@ def index():
         else:
             image = request.files.get("photo")
             note = (request.form.get("journal_note") or "").strip()
-            if not image or not image.filename:
+            if len(note) > NOTE_MAX_LENGTH:
+                error = f"メモは {NOTE_MAX_LENGTH} 文字以内にしてください。"
+            elif not image or not image.filename:
                 error = "コレクションの写真を選んでください。"
             else:
                 raw = image.read()
-                mime = image.mimetype or "image/jpeg"
-                if not raw or not mime.startswith("image/"):
+                mime = detect_image_mime(raw)
+                if not raw or not mime:
                     error = "画像ファイルを選んでください。"
                 elif len(raw) > 8 * 1024 * 1024:
                     error = "画像は 8MB 以下にしてください。"
@@ -773,10 +848,7 @@ def index():
                                 "Vercel の GEMINI_API_KEY を確認してください。"
                             )
                         else:
-                            detail = str(exc).strip()
-                            if len(detail) > 220:
-                                detail = detail[:220] + "…"
-                            error = f"物語の生成に失敗しました。（{type(exc).__name__}: {detail}）"
+                            error = "物語の生成に失敗しました。時間をおいて再度お試しください。"
         quota = remaining_for(user)
     return render_template(
         "index.html",

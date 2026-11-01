@@ -73,18 +73,6 @@
 
     <footer>鈴木トータルサービス · {{ app_name }} · <a href="{{ url_for('terms') }}">利用規約</a></footer>
   </main>
-  <script>
-    document.getElementById("story-form")?.addEventListener("submit", function (e) {
-      var agree = document.getElementById("agree_terms");
-      var btn = document.getElementById("run-story");
-      if (agree && !agree.checked) {
-        e.preventDefault();
-        alert("利用規約への同意が必要です。");
-        agree.focus();
-        return;
-      }
-      if (btn) btn.textContent = "紡いでいます…";
-    });
-  </script>
+  <script src="{{ url_for('static', filename='story-form.js') }}"></script>
 </body>
 </html>

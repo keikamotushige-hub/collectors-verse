@@ -1,4 +1,6 @@
 import hashlib
+import io
+import os
 import uuid
 from urllib.parse import urlparse
 
@@ -331,3 +333,167 @@ def test_secret_key_is_not_derived_from_the_old_password(monkeypatch, tmp_path):
     assert first == second
     assert first != known
     assert len(first) >= 32
+
+
+def test_responses_send_browser_security_headers(client):
+    response = client.get("/login")
+    policy = response.headers["Content-Security-Policy"]
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert "frame-ancestors 'none'" in policy
+    assert "script-src 'self'" in policy
+    assert "unsafe-inline" not in policy
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def _post_photo(client, note="memo"):
+    token = _csrf(client, "/")
+    return client.post(
+        "/",
+        data={
+            "csrf_token": token,
+            "agree_terms": "on",
+            "journal_note": note,
+            "photo": (io.BytesIO(b"\xff\xd8\xff\xd9"), "item.jpg", "image/jpeg"),
+        },
+    )
+
+
+def test_story_failure_does_not_reveal_internals(client, monkeypatch):
+    _signup(client)
+    messages = iter(
+        [
+            RuntimeError("upstream boom token=super-secret-leak host=internal.example"),
+            RuntimeError("GEMINI_API_KEY=super-secret-leak rejected with 401"),
+        ]
+    )
+
+    def explode(_raw, _mime, _note):
+        raise next(messages)
+
+    monkeypatch.setattr(app_module, "generate_story", explode)
+    generic = _post_photo(client)
+    generic_body = generic.get_data(as_text=True)
+    assert generic.status_code == 200
+    assert "super-secret-leak" not in generic_body
+    assert "RuntimeError" not in generic_body
+    assert "internal.example" not in generic_body
+    assert "物語の生成に失敗しました" in generic_body
+
+    key_error = _post_photo(client)
+    key_body = key_error.get_data(as_text=True)
+    assert "super-secret-leak" not in key_body
+    assert "GEMINI_API_KEY を確認してください" in key_body
+
+
+def test_non_image_upload_is_rejected(client, monkeypatch):
+    _signup(client)
+    called = {"yes": False}
+
+    def explode(*_args, **_kwargs):
+        called["yes"] = True
+        raise AssertionError("generate_story should not run")
+
+    monkeypatch.setattr(app_module, "generate_story", explode)
+    token = _csrf(client, "/")
+    response = client.post(
+        "/",
+        data={
+            "csrf_token": token,
+            "agree_terms": "on",
+            "photo": (io.BytesIO(b"not-an-image"), "evil.jpg", "image/jpeg"),
+        },
+    )
+    assert response.status_code == 200
+    assert "画像ファイルを選んでください" in response.get_data(as_text=True)
+    assert called["yes"] is False
+
+
+def test_saved_story_text_is_escaped(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        "generate_story",
+        lambda *_args, **_kwargs: "# タイトル\n<script>alert(1)</script>\n",
+    )
+    _signup(client)
+    token = _csrf(client, "/")
+    response = client.post(
+        "/",
+        data={
+            "csrf_token": token,
+            "agree_terms": "on",
+            "journal_note": "<script>alert(1)</script>",
+            "photo": (io.BytesIO(b"\xff\xd8\xff\xd9"), "item.jpg", "image/jpeg"),
+        },
+        follow_redirects=True,
+    )
+    body = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;" in body
+
+
+def test_signup_is_rate_limited(client, monkeypatch):
+    monkeypatch.setattr(app_module, "LOGIN_MAX_FAILURES", 2)
+    _signup(client)
+    _logout(client)
+    _signup(client)
+    _logout(client)
+    token = _csrf(client, "/signup")
+    blocked = client.post(
+        "/signup",
+        data={
+            "csrf_token": token,
+            "email": "third@example.com",
+            "password": "correct-horse",
+            "password2": "correct-horse",
+            "agree_terms": "on",
+        },
+    )
+    assert blocked.status_code == 200
+    assert "多すぎ" in blocked.get_data(as_text=True)
+
+
+def test_item_lookup_uses_parameters(client):
+    _signup(client)
+    response = client.get("/items/' OR 1=1 --")
+    assert response.status_code == 302
+    assert _path(response) == "/"
+
+
+def test_gemini_key_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-from-env-123456")
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key-should-not-win")
+    assert app_module.get_api_key() == "gemini-key-from-env-123456"
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    assert app_module.get_api_key() == "google-key-should-not-win"
+
+
+def test_story_without_api_key_does_not_call_out(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
+    with pytest.raises(RuntimeError) as caught:
+        app_module.generate_story(b"\xff\xd8\xff", "image/jpeg", "note")
+    message = str(caught.value)
+    assert "GEMINI_API_KEY" in message
+    assert "AIza" not in message
+
+
+def test_dotenv_fills_only_missing_values(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "GEMINI_API_KEY=from-file-key\nOWNER_PASSWORD=from-file-password\nEXTRA_CV_SETTING=from-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "already-set")
+    os.environ.pop("OWNER_PASSWORD", None)
+    os.environ.pop("EXTRA_CV_SETTING", None)
+    try:
+        app_module.load_local_env(env_file)
+        assert os.environ["GEMINI_API_KEY"] == "already-set"
+        assert os.environ["OWNER_PASSWORD"] == "from-file-password"
+        assert os.environ["EXTRA_CV_SETTING"] == "from-file"
+        assert app_module.get_api_key() == "already-set"
+    finally:
+        os.environ.pop("OWNER_PASSWORD", None)
+        os.environ.pop("EXTRA_CV_SETTING", None)

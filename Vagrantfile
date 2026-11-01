@@ -24,13 +24,15 @@ Description=Collector Verse
 After=network.target
 [Service]
 WorkingDirectory=/opt/collectors-verse
-    Environment=AUTH_MODE=env
-    Environment=OWNER_EMAILS=keikamotushige@gmail.com
-    Environment=OWNER_PASSWORD=#{ENV['OWNER_PASSWORD']}
-    Environment=SECRET_KEY=#{ENV['SECRET_KEY']}
-    Environment=PER_PERSON_LIMIT=3
+Environment=AUTH_MODE=env
+Environment=OWNER_EMAILS=#{ENV['OWNER_EMAILS'] || 'keikamotushige@gmail.com'}
+Environment=OWNER_PASSWORD=#{ENV['OWNER_PASSWORD']}
+Environment=SECRET_KEY=#{ENV['SECRET_KEY']}
+Environment=PER_PERSON_LIMIT=3
 Environment=PORT=5001
 Environment=GEMINI_API_KEY=#{ENV['GEMINI_API_KEY']}
+Environment=GOOGLE_API_KEY=#{ENV['GOOGLE_API_KEY']}
+Environment=GEMINI_MODEL=#{ENV['GEMINI_MODEL'] || 'gemini-2.5-flash'}
 ExecStart=/opt/collectors-verse/.venv/bin/python app.py
 Restart=always
 [Install]
